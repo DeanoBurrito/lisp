@@ -54,7 +54,7 @@ namespace Npl
     static void SetKernelSlide()
     {
         kernelSlide = 0; //TODO: KASLR
-        NPL_LOG("Setting kernel slide: %tu, effective load window 0x%tx->0x%tx\r\n", 
+        NPL_LOG("Setting kernel slide: %u, effective load window 0x%x->0x%x\r\n", 
             kernelSlide, kernelBase + kernelSlide, kernelTop + kernelSlide);
     }
 
@@ -72,15 +72,24 @@ namespace Npl
         {
             const auto op = sl::ComputeRelocation(type, 0, b, s);
             if (op.length == 0)
+            {
+                NPL_LOG("Relocation %p failed, unknown type %u", r, type);
                 return false;
+            }
             sl::memcopy(reinterpret_cast<void*>(p), &a, op.length);
         }
 
         const auto op = sl::ComputeRelocation(type, a, b, s);
         if (op.usedSymbol && s == 0)
-            return false; //tried to reference an external symbol
+        {
+            NPL_LOG("Relocation %p failed, referenced external symbol", r);
+            return false;
+        }
         if (op.length == 0)
-            return false; //unknown relocation type. *sigh* time to crack open _that_ version of the m68k elf psABI.
+        {
+            NPL_LOG("Relocation %p failed, unknown type %u", r, type);
+            return false;
+        }
 
         sl::memcopy(&op.value, reinterpret_cast<void*>(p), op.length);
         return true;
@@ -124,12 +133,13 @@ namespace Npl
             switch (scan->d_tag)
             {
             case sl::DT_NEEDED: 
+                NPL_LOG("Kernel has a DT_NEEDED tag, aborting load");
                 return false;
             case sl::DT_SYMTAB:
-                symTable = reinterpret_cast<const sl::Elf_Sym*>(scan->d_ptr - kernelBase + blob.raw);
+                symTable = reinterpret_cast<const sl::Elf_Sym*>(scan->d_ptr + kernelSlide);
                 break;
             case sl::DT_JMPREL:
-                pltRelocs = reinterpret_cast<const uint8_t*>(scan->d_ptr - kernelBase + blob.raw);
+                pltRelocs = reinterpret_cast<const uint8_t*>(scan->d_ptr + kernelSlide);
                 break;
             case sl::DT_PLTRELSZ:
                 pltRelocSize = scan->d_val;
@@ -138,10 +148,10 @@ namespace Npl
                 pltUsesRela = (scan->d_val == sl::DT_RELA);
                 break;
             case sl::DT_RELA:
-                relas = reinterpret_cast<const sl::Elf_Rela*>(scan->d_ptr - kernelBase + blob.raw);
+                relas = reinterpret_cast<const sl::Elf_Rela*>(scan->d_ptr + kernelSlide);
                 break;
             case sl::DT_REL:
-                rels = reinterpret_cast<const sl::Elf_Rel*>(scan->d_ptr - kernelBase + blob.raw);
+                rels = reinterpret_cast<const sl::Elf_Rel*>(scan->d_ptr + kernelSlide);
                 break;
             case sl::DT_RELASZ:
                 relaCount = scan->d_val / sizeof(sl::Elf_Rela);
@@ -154,15 +164,16 @@ namespace Npl
             }
         }
 
+        size_t failedCount = 0;
         for (size_t i = 0; i < relCount; i++)
         {
             if (!DoRelocation(false, reinterpret_cast<const sl::Elf_Rela*>(&rels[i]), symTable))
-                return false;
+                failedCount++;
         }
         for (size_t i = 0; i < relaCount; i++)
         {
             if (!DoRelocation(true, &relas[i], symTable))
-                return false;
+                failedCount++;
         }
 
         size_t pltCount = 0;
@@ -170,13 +181,19 @@ namespace Npl
         {
             auto rela = reinterpret_cast<const sl::Elf_Rela*>(pltRelocs + off);
             if (!DoRelocation(pltUsesRela, rela, symTable))
-                return false;
+                failedCount++;
 
             off += pltUsesRela ? sizeof(sl::Elf_Rela) : sizeof(sl::Elf_Rel);
             pltCount++;
         }
 
-        NPL_LOG("Kernel relocations done: rel=%zu, rela=%zu, plt=%zu\r\n", relCount, relaCount, pltCount);
+        if (failedCount != 0)
+        {
+            NPL_LOG("Kernel relocations done: %u/%u failed.", failedCount, relCount + relaCount + pltCount);
+            return false;
+        }
+
+        NPL_LOG("Kernel relocations done: rel=%u, rela=%u, plt=%u\r\n", relCount, relaCount, pltCount);
         return true;
     }
 
@@ -207,7 +224,13 @@ namespace Npl
             if (phdrs[i].p_vaddr + phdrs[i].p_memsz > kernelTop)
                 kernelTop = phdrs[i].p_vaddr + phdrs[i].p_memsz;
         }
-        NPL_LOG("Kernel image requests load window: 0x%tx->0x%tx\r\n", kernelBase, kernelTop);
+        NPL_LOG("Kernel image requests load window: 0x%x->0x%x\r\n", kernelBase, kernelTop);
+
+        if (kernelBase < 0x8000'0000 || kernelTop < kernelBase)
+        {
+            NPL_LOG("Kernel image has requested a bad load window, aborting load.");
+            return false;
+        }
 
         SetKernelSlide();
 
@@ -218,7 +241,7 @@ namespace Npl
         }();
         if (kernelPhysBase == 0)
             Panic(PanicReason::LoadAllocFailure);
-        NPL_LOG("Kernel physical base: 0x%tx\r\n", kernelPhysBase);
+        NPL_LOG("Kernel physical base: 0x%x\r\n", kernelPhysBase);
 
         sl::NativePtr slate = MapMemory(kernelTop - kernelBase, kernelBase + kernelSlide, kernelPhysBase);
         for (size_t i = 0; i < phdrCount; i++)
@@ -233,7 +256,7 @@ namespace Npl
             if (zeroes != 0)
                 sl::memset(sl::NativePtr(dest).Offset(phdr.p_filesz).ptr, 0, zeroes);
 
-            NPL_LOG("Segment %zu loaded at %p, 0x%tx bytes, 0x%zx zeroes appended.\r\n", i,
+            NPL_LOG("Segment %u loaded at %p, 0x%x bytes, 0x%x zeroes appended.\r\n", i,
                 dest, phdr.p_filesz, zeroes);
         }
         

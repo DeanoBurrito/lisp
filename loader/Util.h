@@ -24,6 +24,7 @@ namespace Npl
         HhdmSetupFail = 5,
         BadLbpRevision = 6,
         DeleteCalled = 7,
+        KernelLoadFailure = 8,
     };
 
     enum class BootInfoType : uint16_t

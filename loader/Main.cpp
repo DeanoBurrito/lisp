@@ -22,6 +22,8 @@ namespace Npl
     void FillLbpString(char** ptr, sl::StringSpan str)
     {
         char* buff = new char[str.Size()];
+        if (buff == nullptr)
+            Panic(PanicReason::InternalAllocFailure);
         sl::memcopy(str.Begin(), buff, str.Size());
         *ptr = buff;
     }
@@ -202,7 +204,11 @@ extern "C"
         NPL_LOG("MMU enabled, UART re-mapped at %p\r\n", uart.ptr);
 #endif
 
-        LoadKernel();
+        if (!LoadKernel())
+        {
+            NPL_LOG("Failed to load kernel, the system must be manually reset.");
+            Panic(PanicReason::KernelLoadFailure);
+        }
 
         //memory map request gets special treatment: we want to handle it last since we
         //may modify the memory map while handling other responses.
