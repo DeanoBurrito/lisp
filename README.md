@@ -1,6 +1,6 @@
 # Limine (boot protocol) In Silly Places
 
-This a boot shim for the qemu m68k 'virt' machine, it allows for booting limine protocol kernels. Please note that this project is entirely separate to the limine bootloader and mainstream limine protocol - if you're using this shim please dont ask for help upstream or bother actual limine devs.
+This is a boot shim for the qemu m68k 'virt' machine, enabling limine protocol kernels to run on this platform. Please note that this project is entirely separate to the limine bootloader and mainstream limine protocol - if you're using this shim please dont ask for help upstream or bother actual limine devs.
 
 ## Changes to Original LBP Specification
 
